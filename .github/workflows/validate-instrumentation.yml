@@ -1,0 +1,99 @@
+name: Validate Instrumentation
+
+on:
+  push:
+    branches:
+      - 'qualizeal-instrumentation-*'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Build Docker image
+        id: build
+        run: |
+          echo "Building Docker image..."
+          docker build -t test-instrumentation .
+          echo "✅ Docker build successful"
+
+      - name: Start container
+        id: start
+        run: |
+          echo "Starting container..."
+          docker run -d \
+            --name test-container \
+            -p 9229:9229 \
+            -p 3000:3000 \
+            test-instrumentation
+          echo "✅ Container started"
+
+      - name: Wait for application startup
+        run: |
+          echo "Waiting for application to start..."
+          sleep 15
+
+      - name: Test inspector port accessibility
+        id: test_inspector
+        run: |
+          echo "Testing inspector port 9229..."
+          max_attempts=5
+          attempt=0
+
+          while [ $attempt -lt $max_attempts ]; do
+            if curl -f http://localhost:9229/json --connect-timeout 5 2>/dev/null; then
+              echo "✅ Inspector port 9229 is accessible"
+              exit 0
+            fi
+
+            attempt=$((attempt + 1))
+            echo "Attempt $attempt/$max_attempts failed, retrying..."
+            sleep 3
+          done
+
+          echo "❌ Inspector port not accessible after $max_attempts attempts"
+          docker logs test-container
+          exit 1
+
+      - name: Test application port accessibility
+        id: test_app
+        run: |
+          echo "Testing application port 3000..."
+          if curl -f http://localhost:3000 --connect-timeout 5 2>/dev/null || curl -f http://localhost:3000/health --connect-timeout 5 2>/dev/null; then
+            echo "✅ Application port 3000 is accessible"
+          else
+            echo "⚠️  Application port 3000 not accessible (may be expected)"
+          fi
+
+      - name: Show container logs
+        if: failure()
+        run: |
+          echo "=== Container Logs ==="
+          docker logs test-container
+
+      - name: Cleanup
+        if: always()
+        run: |
+          echo "Cleaning up..."
+          docker stop test-container || true
+          docker rm test-container || true
+          docker rmi test-instrumentation || true
+          echo "✅ Cleanup complete"
+
+      - name: Validation summary
+        if: success()
+        run: |
+          echo "╔════════════════════════════════════════╗"
+          echo "║   ✅ VALIDATION PASSED                 ║"
+          echo "╚════════════════════════════════════════╝"
+          echo ""
+          echo "All checks passed:"
+          echo "  ✅ Docker image builds successfully"
+          echo "  ✅ Container starts without errors"
+          echo "  ✅ Inspector port (9229) is accessible"
+          echo ""
+          echo "The instrumentation configuration is valid!"
+          echo "Agent can now proceed to create the PR."
